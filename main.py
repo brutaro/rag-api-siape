@@ -41,8 +41,15 @@ try:
     llm = ChatOpenAI(model_name="gpt-4o", temperature=0.2, api_key=OPENAI_API_KEY)
     
     print("Modelos e conexão com o índice estabelecidos com sucesso.")
-except Exception as e:
-    print(f"ERRO CRÍTICO NA INICIALIZAÇÃO: {e}")
+eexcept Exception as e:
+        print(f"!!!!!!!!!!!! ERRO INESPERADO DURANTE O PROCESSAMENTO DA QUERY !!!!!!!!!!!!")
+        traceback.print_exc()
+        # A correção é passar 'e' como um argumento para a função
+        async def exception_stream(exception_obj: Exception):
+            yield json.dumps({"sources": ["Erro no Servidor"]}) + "\n---\n"
+            yield f"Ocorreu um erro interno no servidor: {str(exception_obj)}"
+        
+        return StreamingResponse(exception_stream(e), media_type="text/plain; charset=utf-8")
     # ... (lógica de erro existente) ...
 
 # --- GERENCIADOR DE MEMÓRIA (NOVO) ---
