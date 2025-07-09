@@ -41,7 +41,7 @@ try:
     llm = ChatOpenAI(model_name="gpt-4o", temperature=0.2, api_key=OPENAI_API_KEY)
     
     print("Modelos e conexão com o índice estabelecidos com sucesso.")
-eexcept Exception as e:
+except Exception as e:
         print(f"!!!!!!!!!!!! ERRO INESPERADO DURANTE O PROCESSAMENTO DA QUERY !!!!!!!!!!!!")
         traceback.print_exc()
         # A correção é passar 'e' como um argumento para a função
