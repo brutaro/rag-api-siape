@@ -1,63 +1,49 @@
 import requests
-import json
+import uuid
+import sys
 
-# --- CONFIGURAÇÃO ---
+# URL da sua API no Railway
 API_URL = "https://rag-api-siape-production.up.railway.app/query"
-QUESTION = "Para que serve o comando >CAVADIRFEX?"
 
-# --- EXECUÇÃO DA CHAMADA À API ---
-print(f"Enviando pergunta para a API na nuvem...")
+# Gera um ID de sessão único para este teste
+session_id = f"test-session-{uuid.uuid4()}"
+
+# Pega a pergunta dos argumentos da linha de comando ou usa uma padrão
+question = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "Para que serve o comando >CAVADIRFEX?"
+
+print("Enviando pergunta para a API na nuvem...")
 print(f"URL: {API_URL}")
-print(f"Pergunta: {QUESTION}")
+print(f"Pergunta: {question}")
+print(f"Session ID: {session_id}")
 
-payload = {"question": QUESTION}
-headers = {"Content-Type": "application/json"}
+# Cria o payload no formato correto, com 'question' e 'session_id'
+payload = {
+    "question": question,
+    "session_id": session_id
+}
 
 try:
-    # Usamos stream=True para lidar com a resposta como um fluxo
-    with requests.post(API_URL, headers=headers, json=payload, stream=True) as response:
-        response.raise_for_status()
-        
-        buffer = ""
-        sources_found = False
-        answer_started = False
+    # Faz a requisição POST para a API
+    response = requests.post(API_URL, json=payload, stream=True)
+    
+    # Verifica se a resposta foi bem sucedida
+    response.raise_for_status() 
 
-        # Itera sobre os pedaços (chunks) da resposta conforme eles chegam
-        for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
-            buffer += chunk
+    print("\n--- Resposta da Vivi IA (Streaming) ---")
+    # Itera sobre a resposta em streaming
+    for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+        # O separador de fontes vem no primeiro chunk
+        if '---' in chunk:
+            parts = chunk.split('---', 1)
+            print(f"Fontes: {parts[0].strip()}")
+            print(parts[1], end='', flush=True)
+        else:
+            print(chunk, end='', flush=True)
+    print("\n-------------------------------------\n")
 
-            # Procura pelo nosso separador '---' para separar as fontes da resposta
-            if not sources_found and "\n---\n" in buffer:
-                parts = buffer.split("\n---\n", 1)
-                json_part = parts[0]
-                buffer = parts[1]  # O resto é o início da resposta da IA
 
-                try:
-                    sources_data = json.loads(json_part)
-                    print("\n" + "="*50)
-                    print("FONTES CONSULTADAS:")
-                    print(sources_data.get("sources", "Nenhuma fonte encontrada."))
-                    print("="*50)
-                except json.JSONDecodeError:
-                    print("ERRO: Não foi possível decodificar o JSON das fontes.")
-                
-                sources_found = True
-
-            # Imprime a resposta da IA conforme ela chega
-            if sources_found:
-                if not answer_started:
-                    print("\nRESPOSTA DA VIVI IA:")
-                    print("="*50)
-                    answer_started = True
-                
-                print(buffer, end="", flush=True)
-                buffer = ""  # Limpa o buffer depois de imprimir
-
-        # Imprime qualquer parte final que sobrou no buffer
-        if buffer:
-            print(buffer, end="", flush=True)
-        print() # Adiciona uma nova linha no final
-
-except requests.exceptions.RequestException as e:
-    print(f"\nERRO: Falha ao se conectar com a API: {e}")
-
+except requests.exceptions.HTTPError as http_err:
+    print(f"\nERRO: Falha ao se conectar com a API: {http_err}")
+    print(f"Detalhes: {response.text}") # Mostra mais detalhes do erro
+except Exception as err:
+    print(f"\nERRO: Ocorreu um erro inesperado: {err}")

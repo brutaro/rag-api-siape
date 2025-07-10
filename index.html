@@ -47,96 +47,90 @@
         </div>
     </div>
 
-   <script>
-    // ... (toda a parte de getElementById permanece a mesma) ...
-    const form = document.getElementById('rag-form');
-    const questionInput = document.getElementById('question-input');
-    const loadingState = document.getElementById('loading-state');
-    const answerState = document.getElementById('answer-state');
-    const answerText = document.getElementById('answer-text');
-    const jokeText = document.getElementById('joke-text');
-    const sourcesContainer = document.getElementById('sources-container');
-    const sourcesList = document.getElementById('sources-list');
-    
-    const RAILWAY_API_URL = "https://rag-api-siape-production.up.railway.app/query";
-    const jokes = ["Analisando as portarias...", "Consultando o SIAPE...", "Buscando na base de conhecimento..."];
+    <script>
+        const form = document.getElementById('rag-form');
+        const questionInput = document.getElementById('question-input');
+        const loadingState = document.getElementById('loading-state');
+        const answerState = document.getElementById('answer-state');
+        const answerText = document.getElementById('answer-text');
+        const jokeText = document.getElementById('joke-text');
+        const sourcesContainer = document.getElementById('sources-container');
+        const sourcesList = document.getElementById('sources-list');
+        
+        const RAILWAY_API_URL = "https://rag-api-siape-production.up.railway.app/query";
+        const jokes = ["Analisando as portarias...", "Consultando o SIAPE...", "Buscando na base de conhecimento..."];
 
-    // <<<<< NOVO: Gerar um ID de sessão único para esta conversa >>>>>
-    const sessionId = `vivi-session-${Date.now()}-${Math.random().toString(36).substring(2)}`;
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const question = questionInput.value.trim();
+            if (!question) return;
 
-    form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const question = questionInput.value.trim();
-        if (!question) return;
+            // Prepara a UI
+            answerState.classList.add('hidden');
+            sourcesContainer.classList.add('hidden');
+            answerText.textContent = '';
+            sourcesList.innerHTML = '';
+            loadingState.classList.remove('hidden');
+            jokeText.textContent = jokes[Math.floor(Math.random() * jokes.length)];
 
-        // UI Prep (sem alterações)
-        answerState.classList.add('hidden');
-        sourcesContainer.classList.add('hidden');
-        answerText.textContent = '';
-        sourcesList.innerHTML = '';
-        loadingState.classList.remove('hidden');
-        jokeText.textContent = jokes[Math.floor(Math.random() * jokes.length)];
+            try {
+                const response = await fetch(RAILWAY_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question: question }),
+                });
 
-        let fullResponseText = ''; // Variável para acumular a resposta completa
+                if (!response.ok) throw new Error(`Erro na rede: ${response.statusText}`);
 
-        try {
-            const response = await fetch(RAILWAY_API_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                // <<<<< ALTERADO: Enviamos a pergunta e o ID da sessão >>>>>
-                body: JSON.stringify({ 
-                    question: question,
-                    session_id: sessionId
-                }),
-            });
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let sourcesReceived = false;
 
-            if (!response.ok) throw new Error(`Erro na rede: ${response.statusText}`);
+                loadingState.classList.add('hidden');
+                answerState.classList.remove('hidden');
 
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            let sourcesReceived = false;
-
-            loadingState.classList.add('hidden');
-            answerState.classList.remove('hidden');
-
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                
-                buffer += decoder.decode(value, { stream: true });
-
-                if (!sourcesReceived && buffer.includes('\n---\n')) {
-                    const parts = buffer.split('\n---\n', 2);
-                    const sourcesJsonString = parts[0];
-                    buffer = parts[1] || ''; 
-                    sourcesReceived = true; // Marca que as fontes foram recebidas
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
                     
-                    try {
-                        const data = JSON.parse(sourcesJsonString);
-                        if (data.sources && data.sources.length > 0) {
-                            sourcesList.innerHTML = data.sources.map(s => `<span class="inline-block bg-gray-200 rounded-full px-2 py-1">${s}</span>`).join('');
-                            sourcesContainer.classList.remove('hidden');
+                    buffer += decoder.decode(value, { stream: true });
+
+                    if (!sourcesReceived && buffer.includes('\n---\n')) {
+                        const parts = buffer.split('\n---\n', 2);
+                        const sourcesJsonString = parts[0];
+                        buffer = parts[1] || ''; // O resto do buffer é o início da resposta
+
+                        try {
+                            const data = JSON.parse(sourcesJsonString);
+                            if (data.sources && data.sources.length > 0) {
+                                sourcesList.innerHTML = data.sources.map(s => `<span class="inline-block bg-gray-200 rounded-full px-2 py-1">${s}</span>`).join('');
+                                sourcesContainer.classList.remove('hidden');
+                            }
+                        } catch (jsonError) {
+                            console.error("Erro ao parsear JSON das fontes:", jsonError, "String recebida:", sourcesJsonString);
                         }
-                    } catch (jsonError) {
-                        console.error("Erro ao parsear JSON das fontes:", jsonError);
+                        sourcesReceived = true;
+                    }
+                    
+                    if (sourcesReceived) {
+                        answerText.textContent += buffer;
+                        buffer = ''; 
                     }
                 }
                 
-                if (sourcesReceived) {
-                    answerText.textContent += buffer;
-                    fullResponseText += buffer; // Acumula a resposta para salvar no histórico
-                    buffer = ''; 
+                // Finaliza o decode para qualquer sobra no buffer
+                if (buffer && !sourcesReceived) {
+                     answerText.textContent = "Não foi possível processar a resposta do servidor.";
                 }
-            }
-            
-            questionInput.value = '';
 
-        } catch (error) {
-            console.error('Falha ao buscar a resposta:', error);
-            answerText.textContent = 'Desculpe, ocorreu um erro ao tentar me comunicar com o servidor.';
-            loadingState.classList.add('hidden');
-            answerState.classList.remove('hidden');
-        }
-    });
-</script>
+            } catch (error) {
+                console.error('Falha ao buscar a resposta:', error);
+                answerText.textContent = 'Desculpe, ocorreu um erro ao tentar me comunicar com o servidor.';
+                loadingState.classList.add('hidden');
+                answerState.classList.remove('hidden');
+            }
+        });
+    </script>
+</body>
+</html>
