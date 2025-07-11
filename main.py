@@ -65,18 +65,21 @@ if not OPENAI_API_KEY:
 # --- Carregamento de Modelos na Inicialização ---
 cross_encoder = None
 
+# ... (todo o código anterior permanece o mesmo) ...
+
 @app.on_event("startup")
 def startup_event():
     global cross_encoder
-    logger.info("Iniciando carregamento do modelo Cross-Encoder...")
+    logger.info("Iniciando carregamento do modelo Cross-Encoder local...")
     try:
-        # AQUI ESTÁ A CORREÇÃO: Adicionado o prefixo "sentence-transformers/"
-        model_name = 'sentence-transformers/ms-marco-MiniLM-L-6-v2'
-        cross_encoder = CrossEncoder(model_name, device='cpu')
-        logger.info(f"✅ Modelo Cross-Encoder '{model_name}' carregado com sucesso.")
+        # AQUI ESTÁ A MUDANÇA: Carregando o modelo do diretório local salvo
+        model_path = './cross-encoder-model'
+        cross_encoder = CrossEncoder(model_path, device='cpu')
+        logger.info(f"✅ Modelo Cross-Encoder carregado com sucesso do caminho '{model_path}'.")
     except Exception as e:
-        logger.error(f"❌ Falha crítica ao carregar o Cross-Encoder: {e}")
-        raise RuntimeError(f"Não foi possível carregar o Cross-Encoder: {e}")
+        logger.error(f"❌ Falha crítica ao carregar o Cross-Encoder local: {e}")
+        raise RuntimeError(f"Não foi possível carregar o Cross-Encoder local: {e}")
+
 
 # --- Funções do Pipeline RAG ---
 
