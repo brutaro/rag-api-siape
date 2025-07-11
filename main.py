@@ -70,12 +70,12 @@ def startup_event():
     global cross_encoder
     logger.info("Iniciando carregamento do modelo Cross-Encoder...")
     try:
-        # Este modelo é leve e eficiente para reranking
-        cross_encoder = CrossEncoder('ms-marco-MiniLM-L-6-v2', device='cpu')
-        logger.info("✅ Modelo Cross-Encoder carregado com sucesso.")
+        # AQUI ESTÁ A CORREÇÃO: Adicionado o prefixo "sentence-transformers/"
+        model_name = 'sentence-transformers/ms-marco-MiniLM-L-6-v2'
+        cross_encoder = CrossEncoder(model_name, device='cpu')
+        logger.info(f"✅ Modelo Cross-Encoder '{model_name}' carregado com sucesso.")
     except Exception as e:
         logger.error(f"❌ Falha crítica ao carregar o Cross-Encoder: {e}")
-        # Em um ambiente de produção, você pode querer que a aplicação não inicie sem o modelo.
         raise RuntimeError(f"Não foi possível carregar o Cross-Encoder: {e}")
 
 # --- Funções do Pipeline RAG ---
@@ -99,12 +99,8 @@ async def enrich_and_generate_queries(query: str, client: httpx.AsyncClient) -> 
 
 async def retrieve_documents(query: str) -> List[str]:
     # --- REQUISITO 4 (PARTE 1): Lógica de busca de documentos ---
-    # Esta é uma SIMULAÇÃO. Substitua pela sua lógica real de busca em banco vetorial.
     logger.info(f"Buscando documentos para a query: '{query}'")
-    # Simula uma base de conhecimento com mais de 50 documentos.
     mock_knowledge_base = [f"Documento simulado número {i} sobre diversas normativas e procedimentos." for i in range(150)]
-    # A sua lógica real faria uma busca por similaridade (ex: com FAISS, ChromaDB) e retornaria os top 50.
-    # Aqui, apenas retornamos os 50 primeiros para simular o comportamento.
     return mock_knowledge_base[:50]
 
 def rerank_documents(original_query: str, documents: List[str]) -> List[str]:
@@ -145,9 +141,6 @@ async def stream_llm_response(query: str, context_docs: List[str], client: httpx
 # --- Endpoint Principal da API ---
 @app.post("/query")
 async def handle_query_stream(request: QueryRequest):
-    """
-    Endpoint principal que orquestra o RAG com todos os requisitos definidos.
-    """
     original_question = request.question
     logger.info(f"--- INICIANDO NOVO FLUXO DE REQUISIÇÃO: '{original_question}' ---")
     
@@ -157,7 +150,7 @@ async def handle_query_stream(request: QueryRequest):
         # 1. Enriquecimento
         queries = await enrich_and_generate_queries(original_question, client)
         
-        # 2. Retrieval (busca 50 chunks por query)
+        # 2. Retrieval
         retrieval_tasks = [retrieve_documents(q) for q in queries]
         list_of_docs = await asyncio.gather(*retrieval_tasks)
         for doc_list in list_of_docs: unique_docs.update(doc_list)
@@ -166,7 +159,6 @@ async def handle_query_stream(request: QueryRequest):
         # 3. Rerank
         reranked_docs = rerank_documents(original_question, list(unique_docs))
         
-        # Seleciona os 5 melhores documentos após o rerank para usar como contexto
         top_k_context = reranked_docs[:5]
         logger.info(f"Top 5 documentos selecionados como contexto final.")
         
