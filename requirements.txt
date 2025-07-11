@@ -6,8 +6,6 @@ sentence-transformers==2.7.0
 torch==2.2.0
 transformers==4.35.0
 numpy==1.26.4
-setuptools>=70.0.0
-wheel>=0.42.0
 python-multipart==0.0.6
 pydantic==2.5.0
 python-dotenv==1.0.0
