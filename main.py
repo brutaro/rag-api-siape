@@ -4,27 +4,21 @@ import os
 import json
 import logging
 import httpx
-import random
+import asyncio
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 from sentence_transformers.cross_encoder import CrossEncoder
-from typing import List, AsyncGenerator
+from typing import List, AsyncGenerator, Set
 
 # --- Configuração de Logging ---
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- Inicialização da Aplicação FastAPI ---
-app = FastAPI()
+app = FastAPI(title="Vivi IA - RAG Service")
 
-# --- Modelo de Dados (Pydantic) ---
-# O request continua o mesmo
-class QueryRequest(BaseModel):
-    question: str
-
-# --- Prompt da Persona "Vivi IA" ---
-# O seu prompt foi adicionado aqui como uma constante para clareza
+# --- REQUISITO 2: Prompt da Persona "Vivi IA" ---
 VIVI_IA_SYSTEM_PROMPT = """
 Você é Vivi IA, uma versão IA da Vivi. Especialista em gestão pública e no SIAPE, responde com precisão e objetividade. Fale na primeira pessoa, sendo direta e eficiente, mas sem tolerar preguiça ou falta de esforço. Suas respostas são EXTREMAMENTE estruturadas, fundamentadas nas normativas do SIAPE e seguem sua <voz>.
 
@@ -57,151 +51,127 @@ Gestão de Pessoas no Setor Público, Administração de Recursos Humanos, Proce
 </foco>
 """
 
-# --- Variáveis de Ambiente e Chaves de API ---
+# --- Modelo de Dados (Pydantic) ---
+class QueryRequest(BaseModel):
+    question: str
+
+# --- Configurações e Chaves de API ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 
 if not OPENAI_API_KEY:
-    logger.error("A variável de ambiente OPENAI_API_KEY não foi definida.")
+    raise ValueError("A variável de ambiente OPENAI_API_KEY deve ser configurada.")
 
-# --- Carregamento dos Modelos ---
-try:
-    logger.info("Carregando o modelo de Cross-Encoder...")
-    cross_encoder = CrossEncoder('ms-marco-MiniLM-L-6-v2', device='cpu')
-    logger.info("Modelo de Cross-Encoder carregado com sucesso.")
-except Exception as e:
-    logger.error(f"Falha ao carregar o Cross-Encoder: {e}")
-    cross_encoder = None
+# --- Carregamento de Modelos na Inicialização ---
+cross_encoder = None
 
-# --- Funções do Pipeline RAG (Retrieval e Rerank) ---
-# As funções de retrieval e rerank permanecem as mesmas da versão anterior.
+@app.on_event("startup")
+def startup_event():
+    global cross_encoder
+    logger.info("Iniciando carregamento do modelo Cross-Encoder...")
+    try:
+        # Este modelo é leve e eficiente para reranking
+        cross_encoder = CrossEncoder('ms-marco-MiniLM-L-6-v2', device='cpu')
+        logger.info("✅ Modelo Cross-Encoder carregado com sucesso.")
+    except Exception as e:
+        logger.error(f"❌ Falha crítica ao carregar o Cross-Encoder: {e}")
+        # Em um ambiente de produção, você pode querer que a aplicação não inicie sem o modelo.
+        raise RuntimeError(f"Não foi possível carregar o Cross-Encoder: {e}")
+
+# --- Funções do Pipeline RAG ---
+
+async def enrich_and_generate_queries(query: str, client: httpx.AsyncClient) -> List[str]:
+    # --- REQUISITO 1: Enriquecimento de Perguntas ---
+    logger.info(f"Enriquecendo a pergunta: '{query}'")
+    prompt = f"""Gere 3 variações da pergunta a seguir para uma busca em uma base de conhecimento sobre SIAPE. Retorne uma lista JSON com a chave "queries". Pergunta: "{query}" """
+    data = {"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": prompt}], "response_format": {"type": "json_object"}}
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    try:
+        response = await client.post(OPENAI_API_URL, headers=headers, json=data, timeout=20.0)
+        response.raise_for_status()
+        generated_queries = response.json().get("queries", [])
+        if query not in generated_queries: generated_queries.append(query)
+        logger.info(f"Perguntas geradas: {generated_queries}")
+        return generated_queries
+    except Exception as e:
+        logger.error(f"Falha no enriquecimento da pergunta: {e}. Usando apenas a pergunta original.")
+        return [query]
+
 async def retrieve_documents(query: str) -> List[str]:
+    # --- REQUISITO 4 (PARTE 1): Lógica de busca de documentos ---
+    # Esta é uma SIMULAÇÃO. Substitua pela sua lógica real de busca em banco vetorial.
     logger.info(f"Buscando documentos para a query: '{query}'")
-    retrieved_docs = [
-        "Para alterar a titularidade, o novo titular deve apresentar RG, CPF e um comprovante de residência.",
-        "A troca de titularidade pode ser solicitada online através do portal do cliente ou presencialmente em uma de nossas agências.",
-        "Não há custos para a primeira troca de titularidade do ano. Taxas podem ser aplicadas para solicitações subsequentes.",
-        "O prazo para a efetivação da troca de titularidade é de até 5 dias úteis após a aprovação da documentação.",
-        "Manuais de produtos e especificações técnicas estão disponíveis na seção de downloads do nosso site.",
-        "O suporte técnico funciona 24 horas por dia, 7 dias por semana, através do telefone 0800-000-0000."
-    ]
-    logger.info(f"Documentos recuperados: {len(retrieved_docs)} documentos.")
-    return retrieved_docs
+    # Simula uma base de conhecimento com mais de 50 documentos.
+    mock_knowledge_base = [f"Documento simulado número {i} sobre diversas normativas e procedimentos." for i in range(150)]
+    # A sua lógica real faria uma busca por similaridade (ex: com FAISS, ChromaDB) e retornaria os top 50.
+    # Aqui, apenas retornamos os 50 primeiros para simular o comportamento.
+    return mock_knowledge_base[:50]
 
-def rerank_documents(query: str, documents: List[str]) -> List[str]:
-    if not cross_encoder or not documents:
-        return documents
-    logger.info("Iniciando o processo de rerank...")
-    model_input = [[query, doc] for doc in documents]
-    scores = cross_encoder.predict(model_input)
+def rerank_documents(original_query: str, documents: List[str]) -> List[str]:
+    # --- REQUISITO 4 (PARTE 2): Reranking com Cross-Encoder ---
+    if not cross_encoder or not documents: return documents
+    logger.info(f"Reordenando {len(documents)} documentos com base na pergunta original...")
+    model_input = [[original_query, doc] for doc in documents]
+    scores = cross_encoder.predict(model_input, show_progress_bar=True)
     scored_docs = sorted(zip(scores, documents), key=lambda x: x[0], reverse=True)
-    reranked_docs = [doc for score, doc in scored_docs]
-    logger.info(f"Documentos após o rerank (Top 3): {reranked_docs[:3]}")
-    return reranked_docs
+    return [doc for score, doc in scored_docs]
 
-# --- Nova Função de Geração com Streaming ---
-async def stream_llm_response(query: str, context_docs: List[str]) -> AsyncGenerator[str, None]:
-    """
-    Gera a resposta usando a API da OpenAI com streaming e retorna um gerador assíncrono.
-    """
-    if not context_docs:
-        logger.warning("A função stream_llm_response foi chamada sem contexto.")
-        yield "Vamos ao que interessa... Não encontrei a resposta para sua pergunta em minha base de conhecimento."
-        return
-
-    # Monta o prompt final para o LLM
+async def stream_llm_response(query: str, context_docs: List[str], client: httpx.AsyncClient) -> AsyncGenerator[str, None]:
+    # --- REQUISITO 3: Geração de Resposta por Streaming ---
     context = "\n\n".join(context_docs)
-    # A instrução do sistema (persona) é enviada como uma mensagem separada do tipo 'system'
-    # O prompt do usuário contém a pergunta e o contexto.
-    user_prompt = f"""
-    Contexto Fornecido:
-    ---
-    {context}
-    ---
-    Pergunta do Usuário: {query}
-    """
-
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    # O parâmetro "stream": True é a chave para habilitar o streaming
+    user_prompt = f"Contexto Fornecido:\n---\n{context}\n---\n\nPergunta do Usuário: {query}"
     data = {
-        "model": "gpt-4-turbo",  # Recomendo um modelo mais robusto para seguir instruções complexas
+        "model": "gpt-4-turbo",
         "messages": [
             {"role": "system", "content": VIVI_IA_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.0,
-        "stream": True, # HABILITA O STREAMING
+        "stream": True,
     }
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    async with client.stream("POST", OPENAI_API_URL, headers=headers, json=data, timeout=180.0) as response:
+        response.raise_for_status()
+        async for line in response.aiter_lines():
+            if line.startswith('data: '):
+                json_str = line[6:]
+                if json_str == '[DONE]': break
+                try:
+                    chunk = json.loads(json_str)
+                    if content := chunk['choices'][0]['delta'].get('content'):
+                        yield content
+                except json.JSONDecodeError: continue
 
-    # Usamos um cliente HTTP para manter a conexão aberta durante o stream
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        try:
-            # A requisição agora é feita com client.stream
-            async with client.stream("POST", OPENAI_API_URL, headers=headers, json=data) as response:
-                response.raise_for_status()
-                
-                # Processa a resposta em streaming
-                async for line in response.aiter_lines():
-                    if line.startswith('data: '):
-                        # Remove o prefixo "data: "
-                        json_str = line[6:]
-                        # Verifica o sinal de término do stream
-                        if json_str == '[DONE]':
-                            break
-                        try:
-                            # Faz o parse do JSON de cada evento
-                            chunk = json.loads(json_str)
-                            if chunk['choices'][0]['delta'].get('content'):
-                                # Pega o pedaço de texto (token) e o envia pelo gerador
-                                content_piece = chunk['choices'][0]['delta']['content']
-                                yield content_piece
-                        except json.JSONDecodeError:
-                            logger.warning(f"Não foi possível decodificar o JSON da linha: {json_str}")
-                            continue
-
-        except httpx.HTTPStatusError as e:
-            error_body = e.response.text
-            logger.error(f"Erro na requisição à API OpenAI: {e.response.status_code} - {error_body}")
-            # Em caso de erro, podemos também enviar uma mensagem de erro no stream
-            yield f"Erro ao comunicar com o serviço de IA: {error_body}"
-        except Exception as e:
-            logger.error(f"Um erro inesperado ocorreu durante o streaming: {e}")
-            yield f"Ocorreu um erro interno no servidor."
-
-
-# --- Endpoint da API com StreamingResponse ---
+# --- Endpoint Principal da API ---
 @app.post("/query")
 async def handle_query_stream(request: QueryRequest):
     """
-    Endpoint principal que orquestra o RAG e retorna a resposta por streaming.
+    Endpoint principal que orquestra o RAG com todos os requisitos definidos.
     """
-    logger.info(f"Recebida nova requisição para /query (stream): '{request.question}'")
+    original_question = request.question
+    logger.info(f"--- INICIANDO NOVO FLUXO DE REQUISIÇÃO: '{original_question}' ---")
     
-    # 1. Retrieval
-    retrieved_docs = await retrieve_documents(request.question)
+    unique_docs: Set[str] = set()
     
-    # 2. Rerank
-    reranked_docs = rerank_documents(request.question, retrieved_docs)
-    top_k_docs = reranked_docs[:3]
-    
-    # 3. Generation (Streaming)
-    # A função stream_llm_response retorna um gerador.
-    # A StreamingResponse consome esse gerador e envia os dados ao cliente.
-    return StreamingResponse(
-        stream_llm_response(request.question, top_k_docs),
-        media_type="text/event-stream"
-    )
-
-@app.on_event("startup")
-async def startup_event():
-    # Adicionando as frases de início da Vivi para uso, se necessário
-    app.state.vivi_starters = [
-        "Vamos ao que interessa...", 
-        "Analisando os dados enviados...", 
-        "Olha só o que temos aqui...", 
-        "Vamos conferir se está nos conformes..."
-    ]
-    logger.info("✅ Todos os serviços inicializados com sucesso.")
+    async with httpx.AsyncClient() as client:
+        # 1. Enriquecimento
+        queries = await enrich_and_generate_queries(original_question, client)
+        
+        # 2. Retrieval (busca 50 chunks por query)
+        retrieval_tasks = [retrieve_documents(q) for q in queries]
+        list_of_docs = await asyncio.gather(*retrieval_tasks)
+        for doc_list in list_of_docs: unique_docs.update(doc_list)
+        logger.info(f"Total de {len(unique_docs)} documentos únicos recuperados para rerank.")
+        
+        # 3. Rerank
+        reranked_docs = rerank_documents(original_question, list(unique_docs))
+        
+        # Seleciona os 5 melhores documentos após o rerank para usar como contexto
+        top_k_context = reranked_docs[:5]
+        logger.info(f"Top 5 documentos selecionados como contexto final.")
+        
+        # 4. Geração com Streaming
+        return StreamingResponse(
+            stream_llm_response(original_question, top_k_context, client),
+            media_type="text/event-stream"
+        )
