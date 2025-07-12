@@ -67,12 +67,13 @@ cross_encoder = None
 
 # ... (todo o código anterior permanece o mesmo) ...
 
+# VERSÃO CORRETA - CARREGANDO DA PASTA LOCAL
 @app.on_event("startup")
 def startup_event():
     global cross_encoder
     logger.info("Iniciando carregamento do modelo Cross-Encoder local...")
     try:
-        # AQUI ESTÁ A MUDANÇA: Carregando o modelo do diretório local salvo
+        # AQUI ESTÁ O APONTAMENTO: Usamos o caminho da pasta
         model_path = './cross-encoder-model'
         cross_encoder = CrossEncoder(model_path, device='cpu')
         logger.info(f"✅ Modelo Cross-Encoder carregado com sucesso do caminho '{model_path}'.")

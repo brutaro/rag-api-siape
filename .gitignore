@@ -1,3 +1,10 @@
-.env
+# Ignorar arquivos de ambiente do Python
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv
 venv/
+
+# Ignorar a pasta do modelo baixado
+/cross-encoder-model/
