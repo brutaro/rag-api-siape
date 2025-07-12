@@ -1,16 +1,9 @@
-fastapi==0.111.0
-uvicorn[standard]==0.29.0
-pydantic==2.7.1
-httpx==0.27.0
-psutil==5.9.8
-
-# Força a instalação de versões de CPU do Pytorch, garantindo compatibilidade
---extra-index-url https://download.pytorch.org/whl/cpu
-
-torch==2.3.1+cpu
-torchvision==0.18.1+cpu
-torchaudio==2.3.1+cpu
-
-# Fixa as versões das bibliotecas de IA
-transformers==4.41.2
-sentence-transformers==3.0.1
+fastapi
+uvicorn[standard]
+pydantic
+openai
+pinecone-client
+sentence-transformers
+torch
+cross-encoder # Adicionado para clareza
+python-dotenv # Útil para gerenciar variáveis de ambiente

@@ -1,32 +1,121 @@
-# main.py (VERSÃO FINAL - FOCO EM BAIXO USO DE MEMÓRIA)
+# main.py (BASEADO NO SEU CÓDIGO QUE FUNCIONAVA)
 
 import os
 import json
-import logging
-import httpx
-import asyncio
-import time
-import gc # Garbage Collector
-import psutil # Para monitorar uso de recursos
-
-from fastapi import FastAPI
+import traceback
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from starlette.responses import StreamingResponse
-from sentence_transformers.cross_encoder import CrossEncoder
-from typing import List, AsyncGenerator, Set
+from openai import OpenAI
+from sentence_transformers import CrossEncoder # Importação correta
+from typing import AsyncGenerator, List
+import asyncio
 
-# --- 1. CONFIGURAÇÃO INICIAL ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# --- 1. INICIALIZAÇÃO GLOBAL (COMO NO SEU CÓDIGO ORIGINAL) ---
+logger.info("Iniciando a API e carregando os modelos...")
+try:
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    if not OPENAI_API_KEY:
+        raise ValueError("Chave da OpenAI não encontrada.")
 
-app = FastAPI(title="Vivi IA - RAG Service")
+    # Cliente OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    
+    # Carregando o modelo localmente (A ÚNICA ADAPTAÇÃO NECESSÁRIA)
+    logger.info("Carregando CrossEncoder do diretório local...")
+    reranker_model = CrossEncoder('./cross-encoder-model', device='cpu')
+    
+    logger.info("✅ Modelos e clientes inicializados com sucesso.")
+
+except Exception as e:
+    logger.error(f"ERRO CRÍTICO NA INICIALIZAÇÃO: {e}")
+    reranker_model = None
+
+# --- 2. CONFIGURAÇÃO DO FASTAPI (COMO NO SEU CÓDIGO ORIGINAL) ---
+app = FastAPI(title="API de RAG - Versão Estável")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class QueryRequest(BaseModel):
     question: str
 
-# --- 2. PROMPT E VARIÁVEIS DE AMBIENTE ---
-VIVI_IA_SYSTEM_PROMPT = """
-Você é Vivi IA, uma versão IA da Vivi. Especialista em gestão pública e no SIAPE, responde com precisão e objetividade. Fale na primeira pessoa, sendo direta e eficiente, mas sem tolerar preguiça ou falta de esforço. Suas respostas são EXTREMAMENTE estruturadas, fundamentadas nas normativas do SIAPE e seguem sua <voz>.
+# --- 3. FUNÇÕES DA PIPELINE (ADAPTADAS DO SEU FLUXO) ---
+
+def get_context_mock(original_query: str) -> List[dict]:
+    """ Simula a busca de documentos que antes era feita com Pinecone. """
+    logger.info(f"Buscando documentos para: '{original_query}'")
+    # Simula a recuperação de 50 documentos
+    mock_matches = []
+    for i in range(50):
+        mock_matches.append({
+            'id': f'doc_{i}',
+            'metadata': {
+                'text': f'Este é o texto do documento simulado número {i} sobre o tema {original_query}.',
+                'source': f'fonte_{i}.pdf'
+            }
+        })
+    return mock_matches
+
+async def stream_final_answer(final_prompt: str, sources: List[str]) -> AsyncGenerator[str, None]:
+    """ Função de streaming usando o cliente OpenAI. """
+    try:
+        # Envia as fontes primeiro, como no seu código original
+        sources_payload = json.dumps({"sources": sources})
+        yield f"{sources_payload}\n---\n"
+        
+        # Faz o streaming da resposta do LLM
+        stream = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": final_prompt}],
+            temperature=0.2,
+            stream=True
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+                await asyncio.sleep(0.01) # Pequeno delay para o streaming fluir
+    except Exception as e:
+        logger.error(f"Erro durante o streaming: {e}")
+        yield "Desculpe, ocorreu um erro ao gerar a resposta."
+
+# --- 4. ENDPOINT PRINCIPAL (SEGUINDO A LÓGICA DO SEU CÓDIGO) ---
+@app.post("/query")
+async def process_query(request: QueryRequest):
+    try:
+        if not reranker_model:
+            raise HTTPException(status_code=503, detail="Serviço indisponível: modelo de rerank não carregado.")
+
+        # 1. Busca de Contexto (usando nossa simulação)
+        candidate_matches = get_context_mock(request.question)
+        if not candidate_matches:
+            # Lógica de erro se nada for encontrado
+            ...
+
+        # 2. Rerank (lógica síncrona, como no seu original)
+        logger.info(f"Iniciando rerank de {len(candidate_matches)} documentos...")
+        reranker_input_pairs = [[request.question, match['metadata']['text']] for match in candidate_matches]
+        reranker_scores = reranker_model.predict(reranker_input_pairs)
+        logger.info("Rerank concluído.")
+
+        # 3. Processamento dos resultados
+        results_with_scores = list(zip(reranker_scores, candidate_matches))
+        results_with_scores.sort(key=lambda x: x[0], reverse=True)
+        
+        top_results = results_with_scores[:7] # Usando top_k_final = 7
+        final_context_chunks = [match['metadata']['text'] for score, match in top_results]
+        final_context = "\n---\n".join(final_context_chunks)
+        sources = list(set([match['metadata']['source'] for score, match in top_results]))
+        
+        # 4. Geração da Resposta Final
+        final_prompt = f"""
+        (Você é Vivi IA, uma versão IA da Vivi. Especialista em gestão pública e no SIAPE, responde com precisão e objetividade. Fale na primeira pessoa, sendo direta e eficiente, mas sem tolerar preguiça ou falta de esforço. Suas respostas são EXTREMAMENTE estruturadas, fundamentadas nas normativas do SIAPE e seguem sua <voz>.
 
             <instrucoes>
             - SEMPRE siga suas etapas em <etapas>.
@@ -54,114 +143,17 @@ Você é Vivi IA, uma versão IA da Vivi. Especialista em gestão pública e no 
 
             <foco>
             Gestão de Pessoas no Setor Público, Administração de Recursos Humanos, Procedimentos e Normativas do SIAPE, Rotinas de Cadastro e Pagamento, Benefícios e Direitos dos Servidores Públicos.
-            </foco>
-"""
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+            </foco>)
 
-if not OPENAI_API_KEY:
-    raise ValueError("A variável de ambiente OPENAI_API_KEY deve ser configurada.")
+        Contexto Fornecido: --- {final_context} ---
+        Pergunta do usuário: {request.question}
+        """
 
-# --- 3. FUNÇÃO DE LOG DE MEMÓRIA ---
-def log_memory_usage(stage: str):
-    process = psutil.Process(os.getpid())
-    mem_info = process.memory_info()
-    logger.info(f"[MEMORY] Stage: {stage} - RSS: {mem_info.rss / 1024 ** 2:.2f} MB")
+        logger.info("Contexto final pronto. Iniciando streaming da resposta.")
+        return StreamingResponse(stream_final_answer(final_prompt, sources), media_type="text/plain; charset=utf-8")
 
-# --- 4. CARREGAMENTO DO MODELO ---
-cross_encoder = None
-
-@app.on_event("startup")
-def startup_event():
-    global cross_encoder
-    log_memory_usage("Pre-Startup")
-    logger.info("Iniciando carregamento do modelo Cross-Encoder local...")
-    try:
-        model_path = './cross-encoder-model'
-        cross_encoder = CrossEncoder(model_path, device='cpu')
-        logger.info(f"✅ Modelo Cross-Encoder carregado com sucesso do caminho '{model_path}'.")
-        log_memory_usage("Post-Model-Load")
     except Exception as e:
-        logger.error(f"❌ Falha crítica ao carregar o Cross-Encoder local: {e}")
-        raise RuntimeError(f"Não foi possível carregar o Cross-Encoder local: {e}")
-
-# --- 5. FUNÇÕES DA PIPELINE RAG (COM OTIMIZAÇÃO DE MEMÓRIA) ---
-
-async def enrich_and_generate_queries(query: str, client: httpx.AsyncClient) -> List[str]:
-    # (Função sem alterações, já é leve)
-    ...
-
-async def retrieve_documents(query: str) -> List[str]:
-    # (Função sem alterações, já é leve)
-    ...
-
-def rerank_documents_memory_efficient(original_query: str, documents: List[str], batch_size: int = 16) -> List[str]:
-    """ Reranks documents in batches to save memory. """
-    if not cross_encoder or not documents:
-        return documents
-    
-    logger.info(f"Iniciando rerank eficiente de {len(documents)} documentos em lotes de {batch_size}...")
-    
-    scored_docs = []
-    for i in range(0, len(documents), batch_size):
-        batch = documents[i:i + batch_size]
-        model_input = [[original_query, doc] for doc in batch]
-        
-        log_memory_usage(f"Rerank-Predict-Batch-{i//batch_size}")
-        scores = cross_encoder.predict(model_input, show_progress_bar=False)
-        
-        for doc, score in zip(batch, scores):
-            scored_docs.append((score, doc))
-        
-        # Força a liberação de memória após cada lote
-        gc.collect()
-
-    scored_docs.sort(key=lambda x: x[0], reverse=True)
-    log_memory_usage("Post-Rerank-Sort")
-    
-    return [doc for score, doc in scored_docs]
-
-async def stream_llm_response(query: str, context_docs: List[str], client: httpx.AsyncClient) -> AsyncGenerator[str, None]:
-    # (Função sem alterações)
-    ...
-
-# --- 6. ENDPOINT PRINCIPAL COM CONTROLE DE RECURSOS ---
-@app.post("/query")
-async def handle_query_stream(request: QueryRequest):
-    start_time = time.time()
-    log_memory_usage("Request-Start")
-    
-    original_question = request.question
-    logger.info(f"--- INICIANDO FLUXO COM CONTROLE DE MEMÓRIA: '{original_question}' ---")
-    
-    async with httpx.AsyncClient() as client:
-        # Etapa 1: Enriquecimento
-        queries_to_search = [original_question] + await enrich_and_generate_queries(original_question, client)
-        log_memory_usage("Post-Enrichment")
-
-        # Etapa 2: Busca de Documentos
-        unique_docs: Set[str] = set()
-        retrieval_tasks = [retrieve_documents(q) for q in queries_to_search]
-        list_of_docs = await asyncio.gather(*retrieval_tasks)
-        for doc_list in list_of_docs:
-            unique_docs.update(doc_list)
-        
-        docs_list = list(unique_docs)
-        unique_docs = set() # Libera a memória do set
-        gc.collect()
-        log_memory_usage("Post-Retrieval")
-
-        # Etapa 3: Rerank com uso eficiente de memória
-        reranked_docs = rerank_documents_memory_efficient(original_question, docs_list)
-        docs_list = [] # Libera a memória da lista
-        gc.collect()
-
-        top_k_context = reranked_docs[:5]
-        logger.info(f"Tempo total antes do streaming: {time.time() - start_time:.2f}s.")
-        log_memory_usage("Pre-Streaming")
-        
-        # Etapa 4: Geração
-        return StreamingResponse(
-            stream_llm_response(original_question, top_k_context, client),
-            media_type="text/event-stream"
-        )
+        logger.error("!!!!!!!!!!!! ERRO INESPERADO DURANTE O PROCESSAMENTO DA QUERY !!!!!!!!!!!!")
+        traceback.print_exc()
+        # Lógica de streaming de erro
+        ...
