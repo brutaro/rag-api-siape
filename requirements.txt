@@ -5,5 +5,4 @@ openai
 pinecone-client
 sentence-transformers
 torch
-cross-encoder # Adicionado para clareza
-python-dotenv # Útil para gerenciar variáveis de ambiente
+python-dotenv
