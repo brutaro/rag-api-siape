@@ -2,6 +2,7 @@ import os
 import traceback
 import asyncio
 import json
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware # <<<<< NOVA IMPORTAÇÃO >>>>>
@@ -20,7 +21,10 @@ try:
     if not PINECONE_API_KEY or not OPENAI_API_KEY:
         raise ValueError("Chaves de API não encontradas nas variáveis de ambiente.")
     pc = Pinecone(api_key=PINECONE_API_KEY)
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(
+    api_key=OPENAI_API_KEY,
+    http_client=httpx.Client(proxies="") # <-- A MUDANÇA ESSENCIAL
+)
     reranker_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
     index = pc.Index("siape-procedimentos")
     print("Modelos e conexão com o índice estabelecidos com sucesso.")
