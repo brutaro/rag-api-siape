@@ -1,28 +1,32 @@
-# main.py (BASEADO NO SEU CÓDIGO QUE FUNCIONAVA)
+# main.py (VERSÃO CORRIGIDA FINAL)
 
 import os
 import json
 import traceback
+import logging  # Importa a biblioteca de logging
+import asyncio
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
-from sentence_transformers import CrossEncoder # Importação correta
+from sentence_transformers import CrossEncoder
 from typing import AsyncGenerator, List
-import asyncio
 
-# --- 1. INICIALIZAÇÃO GLOBAL (COMO NO SEU CÓDIGO ORIGINAL) ---
+# --- CONFIGURAÇÃO DE LOGGING (A CORREÇÃO ESTÁ AQUI) ---
+# Esta seção define e cria o 'logger' antes de ele ser usado.
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# --- 1. INICIALIZAÇÃO GLOBAL ---
 logger.info("Iniciando a API e carregando os modelos...")
 try:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     if not OPENAI_API_KEY:
         raise ValueError("Chave da OpenAI não encontrada.")
 
-    # Cliente OpenAI
     client = OpenAI(api_key=OPENAI_API_KEY)
     
-    # Carregando o modelo localmente (A ÚNICA ADAPTAÇÃO NECESSÁRIA)
     logger.info("Carregando CrossEncoder do diretório local...")
     reranker_model = CrossEncoder('./cross-encoder-model', device='cpu')
     
@@ -32,7 +36,7 @@ except Exception as e:
     logger.error(f"ERRO CRÍTICO NA INICIALIZAÇÃO: {e}")
     reranker_model = None
 
-# --- 2. CONFIGURAÇÃO DO FASTAPI (COMO NO SEU CÓDIGO ORIGINAL) ---
+# --- 2. CONFIGURAÇÃO DO FASTAPI ---
 app = FastAPI(title="API de RAG - Versão Estável")
 app.add_middleware(
     CORSMiddleware,
@@ -48,9 +52,7 @@ class QueryRequest(BaseModel):
 # --- 3. FUNÇÕES DA PIPELINE (ADAPTADAS DO SEU FLUXO) ---
 
 def get_context_mock(original_query: str) -> List[dict]:
-    """ Simula a busca de documentos que antes era feita com Pinecone. """
     logger.info(f"Buscando documentos para: '{original_query}'")
-    # Simula a recuperação de 50 documentos
     mock_matches = []
     for i in range(50):
         mock_matches.append({
@@ -63,13 +65,10 @@ def get_context_mock(original_query: str) -> List[dict]:
     return mock_matches
 
 async def stream_final_answer(final_prompt: str, sources: List[str]) -> AsyncGenerator[str, None]:
-    """ Função de streaming usando o cliente OpenAI. """
     try:
-        # Envia as fontes primeiro, como no seu código original
         sources_payload = json.dumps({"sources": sources})
         yield f"{sources_payload}\n---\n"
         
-        # Faz o streaming da resposta do LLM
         stream = client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": final_prompt}],
@@ -80,40 +79,38 @@ async def stream_final_answer(final_prompt: str, sources: List[str]) -> AsyncGen
             content = chunk.choices[0].delta.content
             if content:
                 yield content
-                await asyncio.sleep(0.01) # Pequeno delay para o streaming fluir
+                await asyncio.sleep(0.01)
     except Exception as e:
         logger.error(f"Erro durante o streaming: {e}")
         yield "Desculpe, ocorreu um erro ao gerar a resposta."
 
-# --- 4. ENDPOINT PRINCIPAL (SEGUINDO A LÓGICA DO SEU CÓDIGO) ---
+# --- 4. ENDPOINT PRINCIPAL ---
 @app.post("/query")
 async def process_query(request: QueryRequest):
     try:
         if not reranker_model:
             raise HTTPException(status_code=503, detail="Serviço indisponível: modelo de rerank não carregado.")
 
-        # 1. Busca de Contexto (usando nossa simulação)
         candidate_matches = get_context_mock(request.question)
         if not candidate_matches:
-            # Lógica de erro se nada for encontrado
-            ...
+            async def error_stream():
+                yield json.dumps({"sources": []}) + "\n---\n"
+                yield "A informação não foi encontrada na base de conhecimento."
+            return StreamingResponse(error_stream(), media_type="text/plain; charset=utf-8")
 
-        # 2. Rerank (lógica síncrona, como no seu original)
         logger.info(f"Iniciando rerank de {len(candidate_matches)} documentos...")
         reranker_input_pairs = [[request.question, match['metadata']['text']] for match in candidate_matches]
         reranker_scores = reranker_model.predict(reranker_input_pairs)
         logger.info("Rerank concluído.")
 
-        # 3. Processamento dos resultados
         results_with_scores = list(zip(reranker_scores, candidate_matches))
         results_with_scores.sort(key=lambda x: x[0], reverse=True)
         
-        top_results = results_with_scores[:7] # Usando top_k_final = 7
+        top_results = results_with_scores[:7]
         final_context_chunks = [match['metadata']['text'] for score, match in top_results]
         final_context = "\n---\n".join(final_context_chunks)
         sources = list(set([match['metadata']['source'] for score, match in top_results]))
         
-        # 4. Geração da Resposta Final
         final_prompt = f"""
         (Você é Vivi IA, uma versão IA da Vivi. Especialista em gestão pública e no SIAPE, responde com precisão e objetividade. Fale na primeira pessoa, sendo direta e eficiente, mas sem tolerar preguiça ou falta de esforço. Suas respostas são EXTREMAMENTE estruturadas, fundamentadas nas normativas do SIAPE e seguem sua <voz>.
 
@@ -155,5 +152,7 @@ async def process_query(request: QueryRequest):
     except Exception as e:
         logger.error("!!!!!!!!!!!! ERRO INESPERADO DURANTE O PROCESSAMENTO DA QUERY !!!!!!!!!!!!")
         traceback.print_exc()
-        # Lógica de streaming de erro
-        ...
+        async def exception_stream():
+            yield json.dumps({"sources": ["Erro no Servidor"]}) + "\n---\n"
+            yield f"Ocorreu um erro interno no servidor: {e}"
+        return StreamingResponse(exception_stream(), media_type="text/plain; charset=utf-8")
